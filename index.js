@@ -12,8 +12,9 @@ const port = process.env.PORT || 3000;
 const app = express();
 
 const Joi = require("joi");
+const { name } = require("ejs");
 
-const expireTime = 60 * 60 * 1000;
+const expireTime = 1 * 60 * 60 * 1000; // Hours * Minutes * Seconds * Milliseconds
 
 /* secret information section */
 const mongodb_host = process.env.MONGODB_HOST;
@@ -25,6 +26,9 @@ const mongodb_session_secret = process.env.MONGODB_SESSION_SECRET;
 const node_session_secret = process.env.NODE_SESSION_SECRET;
 /* END secret section */
 
+app.set("view engine", "ejs");
+
+// MongoDB Database
 var { database } = include("database.js");
 
 const userCollection = database.db(mongodb_database).collection("users");
@@ -47,25 +51,17 @@ app.use(
   })
 );
 
+// Main page
 app.get("/", (req, res) => {
-  if (req.session.authenticated) {
-    var html = `
-        <div style="font-size: 30px;">Hello, ${req.session.name}!<div> 
-        <div><button onclick="window.location.href='/members'">Go to Members Area</button></div>
-        <div><button onclick="window.location.href='/logout'">Log Out</button></div>
-       
-        `;
-    res.send(html);
+  if (req.session.user) {
+    var name = req.query.user;
+    res.render("loggedin");
   } else {
-    var html = `
-        <div><button onclick="window.location.href='/signup'">Sign up</button></div>
-        <div><button onclick="window.location.href='/login'">Log In</button></div>
-       
-        `;
-    res.send(html);
+    res.render("index");
   }
 });
 
+// NoSQL Protection
 app.get("/nosql-injection", async (req, res) => {
   var name = req.query.user;
 
@@ -80,16 +76,9 @@ app.get("/nosql-injection", async (req, res) => {
   const schema = Joi.string().max(20).required();
   const validationResult = schema.validate(name);
 
-  //If we didn't use Joi to validate and check for a valid URL parameter below
-  // we could run our userCollection.find and it would be possible to attack.
-  // A URL parameter of user[$ne]=name would get executed as a MongoDB command
-  // and may result in revealing information about all users or a successful
-  // login without knowing the correct password.
   if (validationResult.error != null) {
     console.log(validationResult.error);
-    res.send(
-      "<h1 style='color:darkred;'>A NoSQL injection attack was detected!!</h1>"
-    );
+    res.render("errorNoSQL");
     return;
   }
 
@@ -100,33 +89,16 @@ app.get("/nosql-injection", async (req, res) => {
 
   console.log(result);
 
-  res.send(`<h1>Hello ${name}</h1>`);
+  res.render("NoSQLverified");
 });
 
-
-app.get('/signup', (req,res) => {
-    var html = `
-    create user 
-    <form action='/submitUser' method='post'>
-        <input name='name' type='text' placeholder='name'><br>
-        <input name='email' type='text' placeholder='email'><br>
-        <input name='password' type='password' placeholder='password'><br>
-        <button>Submit</button>
-    </form>
-    `;
-    res.send(html);
+// Signup / Signout / Login / Logout
+app.get("/signup", (req, res) => {
+  res.render("signup");
 });
 
 app.get("/login", (req, res) => {
-  var html = `
-    log in
-    <form action='/loggingin' method='post'>
-    <input name='email' type='text' placeholder='email'>
-    <input name='password' type='password' placeholder='password'>
-    <button>Submit</button>
-    </form>
-    `;
-  res.send(html);
+  res.render("login");
 });
 
 app.post("/submitUser", async (req, res) => {
@@ -136,15 +108,14 @@ app.post("/submitUser", async (req, res) => {
 
   const schema = Joi.object({
     email: Joi.string().email().required(),
-    name: Joi.string().alphanum().max(20).required(),
     password: Joi.string().max(20).required(),
+    name: Joi.string().alphanum().max(20).required()
   });
 
-  const validationResult = schema.validate({ email, name, password });
+  const validationResult = schema.validate({ email, password, name });
   if (validationResult.error != null) {
     console.log(validationResult.error);
-    var errorMessage = validationResult.error.details[0].message;
-    res.send(`There was an error: ${errorMessage}. Please <a href="/signup">retry</a>.`);
+    res.redirect("/signup");
     return;
   }
 
@@ -154,19 +125,22 @@ app.post("/submitUser", async (req, res) => {
     name: name,
     password: hashedPassword,
     email: email,
+    usertype: "user"
   });
   console.log("Inserted user");
 
   req.session.authenticated = true;
   req.session.name = name;
+  req.session.email = email;
+  req.session.usertype = "user";
 
-  res.redirect("/");
+  res.redirect("/loggedin");
 });
 
 app.post("/loggingin", async (req, res) => {
   var email = req.body.email;
   var password = req.body.password;
-
+  
   const schema = Joi.string().max(20).required();
   const validationResult = schema.validate(email);
   if (validationResult.error != null) {
@@ -174,96 +148,128 @@ app.post("/loggingin", async (req, res) => {
     res.redirect("/login");
     return;
   }
-
-  const result = await userCollection
-    .find({ email: email })
-    .project({ name: 1, email: 1, password: 1, _id: 1 })
-    .toArray();
-
+  
+  const result = await userCollection.find({email: email}).project({ name: 1, email: 1, password: 1, _id: 1, usertype: 1 }).toArray();
+  
   console.log(result);
   if (result.length != 1) {
-    console.log("User not found");
-    res.send(`User not found. Please <a href="/login">try again</a>.`);
+    console.log("This user cannot be found");
+    res.redirect("/login");
     return;
   }
   if (await bcrypt.compare(password, result[0].password)) {
-    console.log("Correct Password");
+    console.log("right password");
     req.session.authenticated = true;
     req.session.email = email;
     req.session.name = result[0].name;
+    req.session.usertype = result[0].usertype;
     req.session.cookie.maxAge = expireTime;
 
     res.redirect("/loggedin");
     return;
-  }
-  else {
-    console.log("Incorrect Password");
-    res.send(`Incorrect password. Please <a href="/login">try again</a>.`);
+  } else {
+    console.log("You have entered an invalid password.");
+    res.redirect("/submiterror");
     return;
   }
 });
 
 app.get("/loggedin", (req, res) => {
+  const name = req.session.name;
   if (!req.session.authenticated) {
-    console.log("Please log in.")
+    console.log("Please log in.");
     res.redirect("/login");
   }
-  const name = req.session.name;
-  var html = `
-  <h1>Hello, ${name}!</h1>
-  <form action='/members' method='get'>
-  <button>Go to the Members Area</button>
-  </form>
-  <button onclick="window.location.href='/logout'">Log out</button>
-  `;
-  res.send(html);
+  res.render("loggedin", { name: name });
 });
 
 app.get("/logout", (req, res) => {
   req.session.destroy();
-    res.redirect('/');
+  res.redirect("/");
 });
 
 app.get("/members", (req, res) => {
-  if (!req.session.name) {
+  const name = req.session.name;
+  if (!req.session.authenticated) {
     res.redirect("/");
     return;
   }
 
-  const name = req.session.name;
-  const image = imageURL[Math.floor(Math.random() * imageURL.length)];
-
-  const html = `
-      <h1>Hello, ${name}!</h1>
-      <img src="/${image}" alt="Random image">
-      <br><br>
-      <button onclick="window.location.href='/logout'">Log out</button>
-    `;
-  res.send(html);
+  res.render("members", { name: req.session.name });
 });
 
-const imageURL = [
-  "Ayato.jpg",
-  "Hutao.jpg",
-  "Paimon.gif"
-];
+// Session Validation
+function isValidSession(req) {
+  if (req.session.authenticated) {
+    return true;
+  }
+  return false;
+}
 
-app.get("/image/:id", (req, res) => {
-  var img = req.params.id;
+function sessionValidation(req, res, next) {
+  if (isValidSession(req)) {
+    next();
+  } else {
+    res.redirect("/login");
+  }
+}
 
-  if (img == 1) {
-    res.send(`<img src='/${imageURL[0]}'>`);
-  } else if (img == 2) {
-    res.send(`<img src='/${imageURL[1]}'>`);
-  } else (img == 3)
-    res.send(`<img src='/${imageURL[2]}'>`);
-  });
+// Admin Functions
+function isAdmin(req) {
+  console.log(req.session.usertype);
+  if (req.session.usertype == "admin") {
+    return true;
+  }
+  return false;
+}
+
+function adminAuthorization(req, res, next) {
+  if (!isAdmin(req)) {
+    res.status(403);
+    res.render("403", {
+      error: "Error 403 - You are not authorized.",
+    });
+    return;
+  } else {
+    res.render("/admin");
+  }
+}
+
+app.get("/admin", sessionValidation, adminAuthorization, async (req, res) => {
+  const result = await userCollection
+    .find()
+    .project({ name: 1, _id: 1, usertype: 1 })
+    .toArray();
+  res.render("admin", { users: result });
+});
+
+app.post("/promote", async (req, res) => {
+  var rname = req.body.name;
+
+  await userCollection.updateOne(
+    { name: name },
+    { $set: { usertype: "admin" } }
+  );
+  res.redirect("/admin");
+});
+
+app.post("/demote", async (req, res) => {
+  var name = req.body.name;
+
+  await userCollection.updateOne(
+    { name: name },
+    { $set: { usertype: "user" } }
+  );
+  res.redirect("/admin");
+});
 
 app.use(express.static(__dirname + "/public"));
 
+app.use(express.urlencoded({extended: false}));
+
 app.get("*", (req, res) => {
   res.status(404);
-  res.send("Page not found - 404");
+  res.render("404");
 });
 
 app.listen(port, () => {

@@ -1,0 +1,11 @@
+<li>
+  <%= user.user_type %> (<%= user.username %>)
+  <form action="/promote" method="post">
+    <input type="hidden" name="username" value="<%= user.username%>" />
+    <button class="btn btn-danger" href="" role="button">Promote</button>
+  </form>
+  <form action="/demote" method="post">
+    <input type="hidden" name="username" value="<%= user.username%>" />
+    <button class="btn btn-success" href="" role="button">Demote</button>
+  </form>
+</li>
