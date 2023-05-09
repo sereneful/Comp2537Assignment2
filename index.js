@@ -125,14 +125,14 @@ app.post("/submitUser", async (req, res) => {
     name: name,
     password: hashedPassword,
     email: email,
-    usertype: "user"
+    usertype: "admin"
   });
   console.log("Inserted user");
 
   req.session.authenticated = true;
   req.session.name = name;
   req.session.email = email;
-  req.session.usertype = "user";
+  req.session.usertype = "admin";
 
   res.redirect("/loggedin");
 });
